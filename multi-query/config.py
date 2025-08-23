@@ -27,3 +27,7 @@ DEFAULT_PERSIST_DIR = "./stores/chroma_db"
 
 # --- API Keys ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # required only if using OpenAI
+
+
+RRF_K = 60              # standard RRF constant
+PER_QUERY_K_FUSION = 8  # how many results per variant before fusing

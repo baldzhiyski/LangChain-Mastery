@@ -1,17 +1,3 @@
-"""
-Multi-Query RAG (no LangSmith/Hub).
-- Index web docs -> split -> embed -> persist in Chroma
-- Generate multiple query variants via LLM
-- Retrieve per variant, merge & dedupe, optional MMR
-- Feed context to LLM with local prompt
-- Print retrieved chunks & answer
-
-Usage examples:
-python main.py --index --url https://lilianweng.github.io/posts/2023-06-23-agent/ --persist ./stores/chroma_db
-python main.py --ask "What is Task Decomposition?" --persist ./stores/chroma_db --mmr
-
-"""
-
 import os
 import argparse
 from typing import List, Set
@@ -41,8 +27,9 @@ from config import (                                        # central config fla
     NUM_QUERY_VARIANTS,
     MMR_DIVERSITY,
     DEFAULT_PERSIST_DIR,
+    RRF_K,
+    PER_QUERY_K_FUSION
 )
-
 
 def generate_query_variants(llm: ChatOpenAI, question: str, n: int) -> List[str]:
     """
@@ -162,45 +149,91 @@ def index_urls(urls: List[str], persist_dir: str):
     print(f"✅ Indexed & persisted to: {persist_dir}")
 
 
-def answer_question(question: str, persist_dir: str, use_mmr: bool):
+def answer_question(question: str, persist_dir: str, use_mmr: bool, use_fusion: bool = False, show_variants: bool = False):
     """
-    Question-answering pipeline:
-      1) Load the persisted Chroma DB (no re-embedding).
-      2) Multi-query retrieval (paraphrase question -> search -> merge results).
-      3) Print which chunks were used (source + snippet) for transparency.
-      4) Build RAG prompt with the retrieved context and ask the LLM.
-      5) Print the final grounded answer.
+    Load persisted store, generate multi-query variants, retrieve (MMR OR RRF fusion),
+    then answer with LLM.
     """
     embeddings = make_embeddings()
     vs = load_persisted_chroma(embeddings, persist_dir)
 
-    # Do the actual multi-query retrieval (optionally with MMR)
-    retrieved = retrieve_multi(
-        vectorstore=vs,
-        embeddings=embeddings,    # not used in this function but kept for API symmetry
-        question=question,
-        k=TOP_K_PER_QUERY,
-        use_mmr=use_mmr,
-        mmr_lambda=MMR_DIVERSITY
-    )
-
-    # Show what context we fed to the LLM (helps you debug/learn)
-    print_retrieved(retrieved, title="Retrieved Context")
-
-    # You need an OpenAI key only for the *answering* LLM in this script
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is required to use ChatOpenAI for answering.")
-    llm = ChatOpenAI(model_name=OPENAI_CHAT_MODEL, temperature=0)
+    variants_llm = ChatOpenAI(model_name=OPENAI_CHAT_MODEL, temperature=0)
+    answer_llm = ChatOpenAI(model_name=OPENAI_CHAT_MODEL, temperature=0)
 
-    # Build the simple answering chain and inject the merged context
-    chain, format_docs = build_rag_chain(vs, llm)
+    # 1) generate query variants (once so we can optionally print them)
+    sub_queries = generate_query_variants(variants_llm, question, NUM_QUERY_VARIANTS)
+
+    if show_variants:
+        print("\n=== Query Variants ===")
+        for i, qv in enumerate(sub_queries, 1):
+            print(f"{i:>2}. {qv}")
+
+    # 2) retrieval
+    if use_fusion:
+        # RAG-Fusion: per-variant searches -> RRF fuse
+        retrieved = rag_fusion_rrf(
+            vectorstore=vs,
+            sub_queries=sub_queries,
+            per_query_k=PER_QUERY_K_FUSION,
+            rrf_k=RRF_K,
+            final_k=TOP_K_PER_QUERY
+        )
+    else:
+        # your existing multi-query (with optional MMR per variant)
+        retrieved = retrieve_multi(
+            vectorstore=vs,
+            embeddings=embeddings,
+            question=question,
+            k=TOP_K_PER_QUERY,
+            use_mmr=use_mmr,
+            mmr_lambda=MMR_DIVERSITY
+        )
+
+    print_retrieved(retrieved, title="Retrieved Context")
+
+    # 3) answer with RAG prompt
+    chain, format_docs = build_rag_chain(vs, answer_llm)
     context_text = format_docs(retrieved)
-
-    # Fire the chain: {context, question} -> prompt -> LLM -> string
     answer = chain.invoke({"context": context_text, "question": question})
 
     print("\n=== Answer ===\n")
     print(answer)
+
+from typing import Dict, Tuple
+
+def rag_fusion_rrf(
+    vectorstore,
+    sub_queries: List[str],
+    per_query_k: int = PER_QUERY_K_FUSION,
+    rrf_k: int = RRF_K,
+    final_k: int = TOP_K_PER_QUERY,
+):
+    """
+    RAG-Fusion: run similarity search per sub-query, fuse with RRF.
+    - per_query_k: how many items to pull from EACH variant
+    - rrf_k: RRF constant (60 used in literature)
+    - final_k: how many docs to return after fusion
+    """
+    # Accumulate scores here
+    scores: Dict[Tuple[str, int], float] = {}
+    keep_one_doc_obj: Dict[Tuple[str, int], object] = {}
+
+    for q in sub_queries:
+        docs = vectorstore.similarity_search(q, k=per_query_k)
+        for rank, d in enumerate(docs, start=1):
+            sig = (d.metadata.get("source", "") or d.metadata.get("url", ""), hash(d.page_content))
+            # reciprocal-rank score
+            score = 1.0 / (rrf_k + rank)
+            scores[sig] = scores.get(sig, 0.0) + score
+            # store a representative doc object for this signature
+            keep_one_doc_obj.setdefault(sig, d)
+
+    # sort by fused score (desc) and keep top-k
+    top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:final_k]
+    fused_docs = [keep_one_doc_obj[sig] for sig, _ in top]
+    return fused_docs
 
 
 def main():
@@ -220,6 +253,13 @@ def main():
     parser.add_argument("--persist", type=str, default=DEFAULT_PERSIST_DIR, help="Chroma persist directory")
     parser.add_argument("--mmr", action="store_true", help="Enable Max Marginal Relevance re-ranking")
 
+    parser.add_argument("--show-variants", action="store_true",
+                        help="Print the generated query variants")
+    parser.add_argument("--fusion", action="store_true",
+                        help="Use RAG-Fusion (RRF) instead of per-variant MMR")
+
+
+
     args = parser.parse_args()
 
     # Ensure persist directory exists so Chroma can write files
@@ -233,7 +273,14 @@ def main():
 
     # Run QA if requested
     if args.ask:
-        answer_question(args.ask, args.persist, use_mmr=args.mmr)
+        answer_question(
+            args.ask,
+            args.persist,
+            use_mmr=args.mmr,                 # still available
+            use_fusion=args.fusion,           # new
+            show_variants=args.show_variants  # new
+        )
+
 
     # Show help if no action flags were provided
     if not args.index and not args.ask:
