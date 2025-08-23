@@ -29,3 +29,29 @@ MULTI_QUERY_PROMPT = ChatPromptTemplate.from_messages(
          "Do NOT number them; just return each query on a new line.")
     ]
 )
+
+
+DECOMPOSE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system",
+         "You are a question decomposition engine. Break the user's question into a small set of "
+         "non-overlapping, concrete sub-questions that, if answered, would collectively answer the original question. "
+         "Avoid redundancy. Focus on distinct facets or steps."),
+        ("human",
+         "Question: {question}\n\n"
+         "Generate {n} sub-questions. Output one per line, no numbering.")
+    ]
+)
+
+COMBINE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system",
+         "You are a careful synthesizer. Using ONLY the provided sub-answers, produce a concise final answer. "
+         "If information is missing, say you don't know. Do not invent details."),
+        ("human",
+         "Original Question:\n{question}\n\n"
+         "Sub-answers (one per line as 'Q: ... | A: ...'):\n{sub_answers}\n\n"
+         "Final answer:")
+    ]
+)
+
