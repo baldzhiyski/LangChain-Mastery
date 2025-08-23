@@ -61,7 +61,18 @@ python main.py --index --url https://lilianweng.github.io/posts/2023-06-23-agent
 
 ```
 
-## 7) Index multiple URLs
+## 7) HyDe
+
+**What it does:** HyDE is great when the raw question is short/ambiguous; the synthetic answer gives a dense, content-rich query that better matches your corpus
+
+```bash
+python main.py --ask "What is Task Decomposition?" --persist ./stores/chroma_db --hyde --hyde-n 1 --show-hyde
+
+
+
+```
+
+## 8) Index multiple URLs
 
 **What it does:** Embeds more sources into the same DB (adds to existing).
 
@@ -69,7 +80,7 @@ python main.py --index --url https://lilianweng.github.io/posts/2023-06-23-agent
 python main.py --index   --url https://lilianweng.github.io/posts/2023-06-23-agent/   --url https://lilianweng.github.io/posts/2023-03-15-prompt-engineering/   --persist ./stores/chroma_db
 ```
 
-## 8) Clean rebuild (start fresh)
+## 9) Clean rebuild (start fresh)
 
 **What it does:** Deletes the existing Chroma DB so a new `--index` starts from scratch.
 
@@ -85,7 +96,7 @@ Remove-Item -Recurse -Force .\stores\chroma_db
 rm -rf ./stores/chroma_db
 ```
 
-## 9) One‑liner: index then ask
+## 10) One‑liner: index then ask
 
 **What it does:** Embeds the source, then immediately asks a question using the new DB.
 
@@ -99,16 +110,13 @@ python main.py --index --url https://lilianweng.github.io/posts/2023-06-23-agent
 
 ## Differences at a Glance
 
-| Mode                   | What it focuses on                                                             | When to use                                                 |
-| ---------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------- |
-| **Ask (basic)**        | Multi‑query recall + simple merge                                              | Fast, simple baseline                                       |
-| **Ask + MMR**          | **Diversity** within each variant’s results (reduces duplicates)               | Overlapping chunks / repetitive retrieval                   |
-| **Ask + Fusion (RRF)** | **Consensus** across variants (stable top‑k)                                   | Ambiguous queries, synonym‑heavy corpora                    |
-| **Show Variants**      | Transparency                                                                   | Debug/learning—see what the model searched for              |
-| **Ask + Decompose**    | Multi-hop coverage: split into sub-questions, retrieve/answer each, synthesize | Complex/broad questions needing multiple pieces of evidence |
-
-Ask + Decompose
-Multi-hop coverage: split into sub-questions, retrieve/answer each, synthesize
-Complex/broad questions needing multiple pieces of evidence
+| Mode                   | What it focuses on                                                                 | When to use                                                                                             |
+| ---------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **Ask (basic)**        | Multi‑query recall + simple merge                                                  | Fast, simple baseline                                                                                   |
+| **Ask + MMR**          | **Diversity** within each variant’s results (reduces duplicates)                   | Overlapping chunks / repetitive retrieval                                                               |
+| **Ask + Fusion (RRF)** | **Consensus** across variants (stable top‑k)                                       | Ambiguous queries, synonym‑heavy corpora                                                                |
+| **Show Variants**      | Transparency                                                                       | Debug/learning—see what the model searched for                                                          |
+| **Ask + Decompose**    | Multi-hop coverage: split into sub-questions, retrieve/answer each, synthesize     | Complex/broad questions needing multiple pieces of evidence                                             |
+| **Ask + HyDE**         | **Content-rich query** via LLM-generated hypothetical answer(s) used for retrieval | Short/ambiguous queries; when the raw question under-specifies content; improves recall on dense papers |
 
 > Tip: You can combine **Fusion + Show Variants**, or use **MMR** without Fusion, depending on whether you want **diversity** (MMR) or **consensus** (Fusion).

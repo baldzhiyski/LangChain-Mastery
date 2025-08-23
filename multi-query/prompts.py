@@ -55,3 +55,12 @@ COMBINE_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+
+HYDE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system",
+         "You are a domain expert. Draft a concise, factual answer to the question using general knowledge. "
+         "This is a hypothetical draft for retrieval; do not hedge or say you lack context. 120–200 words."),
+        ("human", "Question: {question}\n\nHypothetical answer:")
+    ]
+)

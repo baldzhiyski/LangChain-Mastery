@@ -8,7 +8,7 @@ from langchain_core.output_parsers import StrOutputParser
 
 # Local modules — make sure your filenames match these:
 from embeddings import make_embeddings
-from prompts import COMBINE_PROMPT, DECOMPOSE_PROMPT, RAG_PROMPT, MULTI_QUERY_PROMPT
+from prompts import COMBINE_PROMPT, DECOMPOSE_PROMPT, HYDE_PROMPT, RAG_PROMPT, MULTI_QUERY_PROMPT
 from vectorestore import (   # NOTE: was 'vectorestore' before — fixed
     load_web_docs,
     split_docs,
@@ -240,6 +240,67 @@ def answer_decomposed(
     print(final)
 
 # -------------------------------
+# HyDe
+# -------------------------------
+
+
+def generate_hyde_docs(llm: ChatOpenAI, question: str, n: int) -> List[str]:
+    """Generate n hypothetical answers for HyDE."""
+    docs = []
+    for _ in range(n):
+        msgs = HYDE_PROMPT.format_messages(question=question)
+        resp = llm.invoke(msgs)
+        docs.append((resp.content or "").strip())
+    return docs
+
+def retrieve_hyde(vectorstore, hyde_texts: List[str], k: int, use_mmr: bool) -> List:
+    """Retrieve using the hypothetical answers as the query text."""
+    merged, seen = [], set()
+    for ht in hyde_texts:
+        if use_mmr:
+            try:
+                docs = vectorstore.max_marginal_relevance_search(
+                    ht, k=k, fetch_k=max(32, k*3), lambda_mult=MMR_DIVERSITY
+                )
+            except AttributeError:
+                docs = vectorstore.similarity_search(ht, k=k)
+        else:
+            docs = vectorstore.similarity_search(ht, k=k)
+        for d in docs:
+            sig = (d.metadata.get("source", "") or d.metadata.get("url", ""), hash(d.page_content))
+            if sig not in seen:
+                seen.add(sig); merged.append(d)
+    return merged
+def answer_question_hyde(question: str, persist_dir: str, hyde_n: int, use_mmr: bool, show_hyde: bool):
+    embeddings = make_embeddings()
+    vs = load_persisted_chroma(embeddings, persist_dir)
+
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is required to use ChatOpenAI.")
+    hyde_llm   = ChatOpenAI(model_name=OPENAI_CHAT_MODEL, temperature=0)
+    answer_llm = ChatOpenAI(model_name=OPENAI_CHAT_MODEL, temperature=0)
+
+    # 1) Generate hypothetical answer(s)
+    hyde_texts = generate_hyde_docs(hyde_llm, question, hyde_n)
+    if show_hyde:
+        print("\n=== HyDE hypothetical document(s) ===")
+        for i, t in enumerate(hyde_texts, 1):
+            print(f"\n--- HyDE #{i} ---\n{t}\n")
+
+    # 2) Retrieve with HyDE text(s)
+    retrieved = retrieve_hyde(vs, hyde_texts, k=TOP_K_PER_QUERY, use_mmr=use_mmr)
+    print_retrieved(retrieved, title="Retrieved via HyDE")
+
+    # 3) Answer as usual with RAG prompt (use the real question)
+    chain, format_docs = build_rag_chain(answer_llm)
+    context_text = format_docs(retrieved)
+    answer = chain.invoke({"context": context_text, "question": question})
+
+    print("\n=== Answer (HyDE) ===\n")
+    print(answer)
+
+
+# -------------------------------
 # CLI
 # -------------------------------
 def main():
@@ -265,8 +326,16 @@ def main():
     parser.add_argument("--show-subqs", action="store_true", help="Print generated sub-questions")
     parser.add_argument("--show-subanswers", action="store_true", help="Print each sub-answer before the final")
 
+    # HyDe
+    parser.add_argument("--hyde", action="store_true", help="Use HyDE: generate hypothetical answer(s) and retrieve with them")
+    parser.add_argument("--hyde-n", type=int, default=1, help="Number of HyDE hypothetical answers to generate")
+    parser.add_argument("--show-hyde", action="store_true", help="Print the HyDE hypothetical document(s)")
+
+
     args = parser.parse_args()
     os.makedirs(args.persist, exist_ok=True)
+
+    
 
     # Indexing
     if args.index:
@@ -284,6 +353,16 @@ def main():
             show_subqs=args.show_subqs,
             show_subanswers=args.show_subanswers,
         )
+    
+    if args.ask and args.hyde:
+        return answer_question_hyde(
+        args.ask,
+        args.persist,
+        hyde_n=args.hyde_n,
+        use_mmr=args.mmr,
+        show_hyde=args.show_hyde,
+    )
+
 
     if args.ask:
         return answer_question(
